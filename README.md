@@ -7,3 +7,4 @@ Additionally, a wearable device tracks miners' health metrics like heart rate an
 | ------------- | ------------- |
 | Mine_Monitoring_ESP32.ino | Code for the Main Mine Monitoring System |
 | Add_Wearable_ESP32.ino | Code for the Wearable device |
+| Add_Wearable_Arduino.ino | Code for the Wearable device using Arduino R4 |
