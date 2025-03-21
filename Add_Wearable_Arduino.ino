@@ -6,12 +6,13 @@
 #define BLYNK_TEMPLATE_NAME "mine monitor system"
 #define BLYNK_AUTH_TOKEN "WuX87fztvwOFI11dUk6phsnsIah4-JDU"
 #define BLYNK_PRINT Serial
-// Pin definitions
-#define MQ135_PIN A0  // Analog pin for MQ135 on Arduino UNO
 
-// Include necessary libraries for Arduino UNO R4 WiFi
+// Pin definitions
+#define MQ135_PIN A0  // Analog pin for MQ135
+
+// Libraries for WiFi and HTTP
 #include <WiFiS3.h>
-#include <BlynkSimpleWiFiS3.h>
+#include <ArduinoHttpClient.h>
 
 // Libraries for MAX30102 sensor
 #include <Wire.h>
@@ -22,10 +23,17 @@
 #include "MQ135.h"
 
 // WiFi credentials
-const char ssid[] = "AURA";
-const char pass[] = "qwertyuiop";
+char ssid[] = "AURA";           // WiFi SSID
+char pass[] = "qwertyuiop";     // WiFi Password
 
+// Blynk authentication token
+char auth[] = BLYNK_AUTH_TOKEN;
 
+// Blynk server details
+char blynk_server[] = "blynk.cloud";
+int blynk_port = 80;
+WiFiClient wifi_client;
+HttpClient http_client = HttpClient(wifi_client, blynk_server, blynk_port);
 
 // Initialize MAX30102 sensor
 MAX30105 particleSensor;
@@ -39,8 +47,9 @@ int8_t validSPO2;          // Indicator to show if the SPO2 calculation is valid
 int32_t heartRate;         // Heart rate value
 int8_t validHeartRate;     // Indicator to show if the heart rate calculation is valid
 
-// Timer for updating data
-BlynkTimer timer;
+// Timer variables for updating data
+unsigned long lastUpdate = 0;
+const unsigned long updateInterval = 2000; // 2 seconds
 
 // Initialize MQ135 sensor
 MQ135 gasSensor = MQ135(MQ135_PIN);
@@ -51,25 +60,23 @@ void setup() {
   while (!Serial) {
     ; // Wait for serial port to connect
   }
-  
   Serial.println("Initializing...");
   
-  // Check WiFi module
-  if (WiFi.status() == WL_NO_MODULE) {
-    Serial.println("Communication with WiFi module failed!");
-    while (true);
-  }
-
-  // Connect to WiFi
-  Serial.print("Connecting to WiFi...");
-  while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
-    Serial.print(".");
-    delay(5000);
-  }
-  Serial.println("Connected!");
+  // Initialize WiFi
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
   
-  // Initialize Blynk
-  Blynk.begin(BLYNK_AUTH_TOKEN, WiFi.macAddress(), ssid, pass);
+  WiFi.begin(ssid, pass);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
   
   // Initialize I2C communication
   Wire.begin();
@@ -90,15 +97,35 @@ void setup() {
   
   particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
   
-  // Set timer to update data every 2 seconds
-  timer.setInterval(2000L, sendSensorData);
-  
   Serial.println("Initialization complete");
 }
 
 void loop() {
-  Blynk.run();
-  timer.run();
+  // Check if it's time to update data
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastUpdate >= updateInterval) {
+    lastUpdate = currentMillis;
+    sendSensorData();
+  }
+}
+
+// Send data to Blynk using HTTP
+void sendValueToBlynk(int pin, float value) {
+  String url = "/external/api/update?token=";
+  url += auth;
+  url += "&v";
+  url += pin;
+  url += "=";
+  url += value;
+  
+  http_client.get(url);
+  
+  // Read response but don't do anything with it
+  int statusCode = http_client.responseStatusCode();
+  String response = http_client.responseBody();
+  
+  Serial.print("HTTP Response code: ");
+  Serial.println(statusCode);
 }
 
 void sendSensorData() {
@@ -135,16 +162,16 @@ void sendSensorData() {
   }
   
   // Send data to Blynk
-  Blynk.virtualWrite(V0, ppm);           // Raw PPM on virtual pin V0
-  Blynk.virtualWrite(V1, correctedPPM);  // Corrected PPM on virtual pin V1
-  Blynk.virtualWrite(V2, airQuality);    // Air quality index on virtual pin V2
+  sendValueToBlynk(0, ppm);           // Raw PPM on virtual pin V0
+  sendValueToBlynk(1, correctedPPM);  // Corrected PPM on virtual pin V1
+  sendValueToBlynk(2, airQuality);    // Air quality index on virtual pin V2
   
   if (validHeartRate) {
-    Blynk.virtualWrite(V3, heartRate);   // Heart rate on virtual pin V3
+    sendValueToBlynk(3, heartRate);   // Heart rate on virtual pin V3
   }
   
   if (validSPO2) {
-    Blynk.virtualWrite(V4, spo2);        // SpO2 on virtual pin V4
+    sendValueToBlynk(4, spo2);        // SpO2 on virtual pin V4
   }
 }
 
@@ -164,7 +191,7 @@ void readMAX30102() {
     // Check if finger is on the sensor
     if (irBuffer[i] < 50000) {
       Serial.println("Finger not detected");
-      Blynk.virtualWrite(V5, "Place finger on sensor");
+      sendValueToBlynk(5, 0); // Send status to V5
       return;
     }
   }
@@ -173,16 +200,6 @@ void readMAX30102() {
   maxim_heart_rate_and_oxygen_saturation(irBuffer, bufferLength, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate);
   
   if (validHeartRate && validSPO2) {
-    Blynk.virtualWrite(V5, "Reading valid");
-  }
-}
-
-// Blynk widget handlers for potential future interaction
-BLYNK_WRITE(V6) {
-  // Example of handling input from Blynk app
-  int buttonState = param.asInt();
-  if (buttonState == 1) {
-    // Do something when button is pressed
-    Serial.println("Button pressed in Blynk app");
+    sendValueToBlynk(5, 1); // Send status to V5
   }
 }
